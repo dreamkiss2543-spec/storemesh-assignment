@@ -6,6 +6,9 @@ def standardize_phone(phone):
         return None
     return "".join(char for char in phone if char.isdigit())
 def convert_amount_to_usd(total_amount, currency, order_date, exchange_rates):
+    if currency is None or currency.strip() == "":
+        return round(total_amount, 2), True
+
     if currency == "USD":
         return round(total_amount, 2), False
 
@@ -82,10 +85,14 @@ def read_rates():
 @task
 def deduplicate_customers(customers):
     latest_customers = {}
+
     for customer in customers:
         customer_id = customer[0]
-        if customer_id not in latest_customers:
+        previous = latest_customers.get(customer_id)
+
+        if previous is None or (customer[4] or "") > (previous[4] or ""):
             latest_customers[customer_id] = customer
+
     return latest_customers
 @task
 def clean_customers(latest_customers):
@@ -136,6 +143,63 @@ def convert_orders(orders, rates):
         
 
     return converted_orders, fallback_count, len(exchange_rates)
+@task
+def save_analytics(cleaned_customers, converted_orders):
+    logger = get_run_logger()
+    output = None
+
+    try:
+        output = sqlite3.connect("analytics.db")
+        output.execute("BEGIN")
+
+        output.execute("""
+            CREATE TABLE IF NOT EXISTS dim_customers (
+                customer_id INTEGER PRIMARY KEY,
+                full_name TEXT,
+                email TEXT,
+                phone TEXT,
+                signup_date TEXT
+            )
+        """)
+        output.execute("DELETE FROM dim_customers")
+        output.executemany("""
+            INSERT INTO dim_customers
+            (customer_id, full_name, email, phone, signup_date)
+            VALUES (?, ?, ?, ?, ?)
+        """, cleaned_customers)
+
+        output.execute("""
+            CREATE TABLE IF NOT EXISTS fct_orders (
+                order_id INTEGER PRIMARY KEY,
+                customer_id INTEGER,
+                order_date TEXT,
+                total_amount REAL,
+                currency TEXT,
+                status TEXT,
+                usd_amount REAL
+            )
+        """)
+        output.execute("DELETE FROM fct_orders")
+        output.executemany("""
+            INSERT INTO fct_orders
+            (order_id, customer_id, order_date, total_amount,
+             currency, status, usd_amount)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, converted_orders)
+
+        output.commit()
+        logger.info("Saved customers: %s", len(cleaned_customers))
+        logger.info("Saved orders: %s", len(converted_orders))
+
+    except sqlite3.Error:
+        if output is not None:
+            output.rollback()
+        logger.exception("Could not save analytics.db")
+        raise
+
+    finally:
+        if output is not None:
+            output.close()
 
 @flow(name="shopdata-etl", log_prints=True)
 def run_pipeline():
@@ -151,31 +215,6 @@ def run_pipeline():
     print(f"Missing emails filled: {missing_email_count}")
     print(f"Phones cleaned: {phones_fixed}")
 
-    output = sqlite3.connect("analytics.db")
-
-    output.execute("""
-        CREATE TABLE IF NOT EXISTS dim_customers (
-            customer_id INTEGER PRIMARY KEY,
-            full_name TEXT,
-            email TEXT,
-            phone TEXT,
-            signup_date TEXT
-        )
-    """)
-
-    output.execute("DELETE FROM dim_customers")
-
-    output.executemany("""
-        INSERT INTO dim_customers
-        (customer_id, full_name, email, phone, signup_date)
-        VALUES (?, ?, ?, ?, ?)
-    """, cleaned_customers)
-
-    output.commit()
-    output.close()
-
-    print(f"Saved customers: {len(cleaned_customers)}")
-
     orders = read_orders()
     print(f"Valid orders: {len(orders)}")
 
@@ -183,37 +222,10 @@ def run_pipeline():
 
     converted_orders, fallback_count, rate_count = convert_orders(orders, rates)
     print(f"Exchange rates loaded: {rate_count}")
-
     print(f"Orders converted: {len(converted_orders)}")
     print(f"Orders without matching rate: {fallback_count}")
 
-    output = sqlite3.connect("analytics.db")
-
-    output.execute("""
-        CREATE TABLE IF NOT EXISTS fct_orders (
-            order_id INTEGER PRIMARY KEY,
-            customer_id INTEGER,
-            order_date TEXT,
-            total_amount REAL,
-            currency TEXT,
-            status TEXT,
-            usd_amount REAL
-        )
-    """)
-
-    output.execute("DELETE FROM fct_orders")
-
-    output.executemany("""
-        INSERT INTO fct_orders
-        (order_id, customer_id, order_date, total_amount,
-        currency, status, usd_amount)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, converted_orders)
-
-    output.commit()
-    output.close()
-
-    print(f"Saved orders: {len(converted_orders)}")
+    save_analytics(cleaned_customers, converted_orders)
 
 if __name__ == "__main__":
     run_pipeline()
