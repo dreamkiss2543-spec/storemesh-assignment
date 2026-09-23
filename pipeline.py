@@ -1,34 +1,84 @@
 import sqlite3
 from prefect import flow, task
+from prefect.logging import get_run_logger
+def standardize_phone(phone):
+    if phone is None:
+        return None
+    return "".join(char for char in phone if char.isdigit())
+def convert_amount_to_usd(total_amount, currency, order_date, exchange_rates):
+    if currency == "USD":
+        return round(total_amount, 2), False
+
+    rate = exchange_rates.get((currency, order_date))
+    if rate is None:
+        return round(total_amount, 2), True
+
+    return round(total_amount * rate, 2), False
 @task
 def read_customers():
-    connection = sqlite3.connect("shopdata.db")
-    customers = connection.execute("""
-        SELECT customer_id, full_name, email, phone, signup_date
-        FROM vw_raw_customers
-        ORDER BY signup_date DESC
-    """).fetchall()
-    connection.close()
-    return customers
+    logger = get_run_logger()
+    connection = None
+
+    try:
+        connection = sqlite3.connect("shopdata.db")
+        customers = connection.execute("""
+            SELECT customer_id, full_name, email, phone, signup_date
+            FROM vw_raw_customers
+            ORDER BY signup_date DESC
+        """).fetchall()
+        logger.info("Read %s customer rows", len(customers))
+        return customers
+
+    except sqlite3.Error:
+        logger.exception("Could not read customers from shopdata.db")
+        raise
+
+    finally:
+        if connection is not None:
+            connection.close()
 @task
 def read_orders():
-    connection = sqlite3.connect("shopdata.db")
-    orders = connection.execute("""
-        SELECT order_id, customer_id, order_date, total_amount, currency, status
-        FROM vw_raw_orders
-        WHERE total_amount > 0
-    """).fetchall()
-    connection.close()
-    return orders
+    logger = get_run_logger()
+    connection = None
+
+    try:
+        connection = sqlite3.connect("shopdata.db")
+        orders = connection.execute("""
+            SELECT order_id, customer_id, order_date, total_amount, currency, status
+            FROM vw_raw_orders
+            WHERE total_amount > 0
+        """).fetchall()
+        logger.info("Read %s valid orders", len(orders))
+        return orders
+
+    except sqlite3.Error:
+        logger.exception("Could not read orders from shopdata.db")
+        raise
+
+    finally:
+        if connection is not None:
+            connection.close()
 @task
 def read_rates():
-    connection = sqlite3.connect("shopdata.db")
-    rates = connection.execute("""
-        SELECT currency, date, rate_to_usd
-        FROM vw_exchange_rates
-    """).fetchall()
-    connection.close()
-    return rates
+    logger = get_run_logger()
+    connection = None
+
+    try:
+        connection = sqlite3.connect("shopdata.db")
+        rates = connection.execute("""
+            SELECT currency, date, rate_to_usd
+            FROM vw_exchange_rates
+        """).fetchall()
+        logger.info("Read %s exchange rates", len(rates))
+        return rates
+
+    except sqlite3.Error:
+        logger.exception("Could not read exchange rates from shopdata.db")
+        raise
+
+    finally:
+        if connection is not None:
+            connection.close()
 @task
 def deduplicate_customers(customers):
     latest_customers = {}
@@ -52,7 +102,7 @@ def clean_customers(latest_customers):
 
         if phone is not None:
             original_phone = phone
-            phone = "".join(char for char in phone if char.isdigit())
+            phone = standardize_phone(phone)
             if phone != original_phone:
                 phones_fixed += 1
 
@@ -73,18 +123,17 @@ def convert_orders(orders, rates):
     for order in orders:
         order_id, customer_id, order_date, total_amount, currency, status = order
 
-        rate = exchange_rates.get((currency, order_date))
-        if currency == "USD":
-            rate = 1.0
-        elif rate is None:
-            rate = 1.0
+        amount_usd, used_fallback = convert_amount_to_usd(
+            total_amount, currency, order_date, exchange_rates
+        )
+        if used_fallback:
             fallback_count += 1
 
-        amount_usd = round(total_amount * rate, 2)
         converted_orders.append(
             (order_id, customer_id, order_date,
              total_amount, currency, status, amount_usd)
         )
+        
 
     return converted_orders, fallback_count, len(exchange_rates)
 
