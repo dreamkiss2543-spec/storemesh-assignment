@@ -11,6 +11,7 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe pipeline.py
 .\.venv\Scripts\python.exe test_pipeline.py
+.\.venv\Scripts\python.exe check_output.py
 ```
 
 เมื่อ unit test ผ่าน จะเห็น `Ran 2 tests` และ `OK` ส่วน `check_output.py` จะตรวจผลในฐานข้อมูลและแสดง `Tests passed: 10 customers, 17 valid orders`
@@ -22,7 +23,8 @@ py -3.12 -m venv .venv
 - `pipeline.py` — Prefect flow สำหรับอ่าน ทำความสะอาด และบันทึกข้อมูล
 - `analytics.db` — ฐานข้อมูลผลลัพธ์ มีตาราง `dim_customers` และ `fct_orders`
 - `clv_report.sql` — SQL รายงานมูลค่าลูกค้าตลอดอายุการใช้งาน
-- `test_pipeline.py` — ตรวจจำนวนลูกค้า ออเดอร์ และยอดออเดอร์ที่ต้องมากกว่า 0
+- `test_pipeline.py` — unit test ทดสอบการล้างเบอร์โทรศัพท์และการแปลงยอดเงิน
+- `check_output.py` — ตรวจผลในฐานข้อมูลว่ามีลูกค้า 10 คน ออเดอร์ 17 รายการ และไม่มียอดออเดอร์ที่ไม่ถูกต้อง
 
 เปิด `analytics.db` ใน DB Browser for SQLite แล้วนำ SQL ใน `clv_report.sql` ไปรันที่แท็บ Execute SQL เพื่อดูรายงาน
 
